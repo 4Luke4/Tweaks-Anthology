@@ -49,10 +49,11 @@ EEex_Opcode_AddListsResolvedListener(function(sprite)
 	local spriteClassStr = GT_Resource_IDSToSymbol["class"][sprite.m_typeAI.m_Class]
 	-- since ``EEex_Opcode_AddListsResolvedListener`` is running after the effect lists have been evaluated, ``m_bonusStats`` has already been added to ``m_derivedStats`` by the engine
 	local spriteKitStr = sprite.m_derivedStats.m_nKit == 0 and "TRUECLASS" or EEex_Resource_KitIDSToSymbol(sprite.m_derivedStats.m_nKit)
+	local spriteSTR = sprite.m_derivedStats.m_nSTR
 	--
 	local grandmastery = EEex_Trigger_ParseConditionalString(string.format("ProficiencyGT(Myself,%d,4)", selectedWeaponProficiencyType))
 	--
-	local applyAbility = spriteClassStr == "FIGHTER" and (spriteKitStr == "TRUECLASS" or spriteKitStr == "MAGESCHOOL_GENERALIST") and grandmastery:evalConditionalAsAIBase(sprite)
+	local applyAbility = spriteClassStr == "FIGHTER" and (spriteKitStr == "TRUECLASS" or spriteKitStr == "MAGESCHOOL_GENERALIST") and grandmastery:evalConditionalAsAIBase(sprite) and spriteSTR >= 17
 	--
 	if sprite:getLocalString("gtTrueFighterCritical") == "" then
 		if applyAbility then
@@ -80,9 +81,70 @@ EEex_Opcode_AddListsResolvedListener(function(sprite)
 	grandmastery:free()
 end)
 
+-- Overwhelming Critical: triple damage instead of double damage --
+
+EEex_Sprite_AddAlterBaseWeaponDamageListener(function(context)
+	local effect = context.effect -- CGameEffect
+	local attacker = context.attacker -- CGameSprite
+	local target = context.target -- CGameSprite
+	local roll = context.roll
+	local isCritical = context.isCritical
+	--
+	local damageAmount = effect.m_effectAmount
+	--
+	if attacker:getLocalString("gtTrueFighterCritical") ~= "" then
+		if isCritical then
+			if effect.m_effectId == 0xC and effect.m_slotNum == -1 and effect.m_sourceType == 0 and effect.m_sourceRes:get() == "" then -- base weapon damage
+				effect.m_effectAmount = 3 * math.floor(damageAmount / 2)
+			end
+		else
+			-- Devastating Critical: ignore immunity to critical hits (f.i. helmets); deal double damage (instead of triple damage)
+			if attacker:getActiveStats().m_nLevel1 >= 30 then
+				-- fetch components of check
+				local items = attacker.m_equipment.m_items -- Array<CItem*,39>
+				local equipment = attacker.m_equipment -- CGameSpriteEquipment
+				local selectedWeapon = equipment.m_items:get(equipment.m_selectedWeapon) -- CItem
+				local slot = equipment.m_selectedWeapon
+				--
+				local launcher = attacker:getLauncher(selectedWeapon:getAbility(equipment.m_selectedWeaponAbility)) -- CItem
+				if launcher ~= nil then
+					for i = 34, 38 do -- also check the magical weapon slot
+						local item = items:get(i) -- CItem
+						if item then -- sanity check
+							if EEex_UDEqual(item, launcher) then
+								slot = i
+								break
+							end
+						end
+					end
+				end
+				--
+				local m_cCriticalEntryList = attacker:getActiveStats().m_cCriticalEntryList
+				local modifier = 0
+				--
+				EEex_Utility_IterateCPtrList(m_cCriticalEntryList, function(entry)
+					if entry.m_res:get() == "" then -- op301/op362
+						if entry.m_hitOrMiss == 0 then -- op301
+							if entry.m_attackType == 0 or entry.m_attackType == ability.type then
+								if entry.m_slot == -1 or entry.m_slot == slot then
+									modifier = modifier + entry.m_bonus
+								end
+							end
+						end
+					end
+				end)
+				--
+				if roll >= 20 - modifier then -- this would have been a critical hit if the target did not have a helmet
+					effect.m_effectAmount = damageAmount * 2
+				end
+			end
+		end
+	end
+end)
+
 -- Core function --
 
-function %TRUECLASS_FIGHTER_CRITICAL%(CGameEffect, CGameSprite)
+function %TRUECLASS_FIGHTER_DEVASTATING_CRITICAL%(CGameEffect, CGameSprite)
 	local sourceSprite = EEex_GameObject_Get(CGameEffect.m_sourceId)
 	--
 	local equipment = sourceSprite.m_equipment -- CGameSpriteEquipment
